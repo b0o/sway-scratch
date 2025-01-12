@@ -6,7 +6,7 @@ set -Eeuo pipefail
 shopt -s inherit_errexit
 
 declare prog="sway-scratch"
-declare version="v0.1.0"
+declare version="v0.1.1"
 declare authors=("Maddison Hellstrom <github.com/b0o>")
 declare repository="github.com/b0o/$prog"
 declare license="MIT"

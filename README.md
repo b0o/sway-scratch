@@ -9,7 +9,7 @@
 
 ```
 
-sway-scratch v0.1.0 (github.com/b0o/sway-scratch)
+sway-scratch v0.1.1 (github.com/b0o/sway-scratch)
 
 (c) 2019-2025 Maddison Hellstrom <github.com/b0o>
 MIT License (https://mit-license.org/)
