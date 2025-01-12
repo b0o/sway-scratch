@@ -32,7 +32,7 @@ $prog $version ($repository)
 $license License ($license_url)
 
 Usage
-  $prog [-q query-type|-i|-x|-t] [-c change-type] [-W width] [-H height] [-T timeout] mark query command [arg ..]
+  $prog [-q query-type|-i|-x|-t|-f] [-c change-type] [-W width] [-H height] [-T timeout] [-p prefix] [-n num] [-r] [-R] [-P position] mark query command [arg ..]
   $prog -h
   $prog -v
 

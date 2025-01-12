@@ -15,7 +15,7 @@ sway-scratch v0.1.0 (github.com/b0o/sway-scratch)
 MIT License (https://mit-license.org/)
 
 Usage
-  sway-scratch [-q query-type|-i|-x|-t] [-c change-type] [-W width] [-H height] [-T timeout] mark query command [arg ..]
+  sway-scratch [-q query-type|-i|-x|-t|-f] [-c change-type] [-W width] [-H height] [-T timeout] [-p prefix] [-n num] [-r] [-R] [-P position] mark query command [arg ..]
   sway-scratch -h
   sway-scratch -v
 
