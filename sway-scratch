@@ -1,0 +1,505 @@
+#!/usr/bin/env bash
+
+# Scratchpad helper for Sway.
+
+set -Eeuo pipefail
+shopt -s inherit_errexit
+
+declare prog="sway-scratch"
+declare version="v0.1.0"
+declare authors=("Maddison Hellstrom <github.com/b0o>")
+declare repository="github.com/b0o/$prog"
+declare license="MIT"
+declare license_url="https://mit-license.org/"
+
+declare -g prefix="sc-"
+declare -g position="center"
+declare -g mark
+declare -g query
+declare -g query_type
+declare -gi query_regex=0
+declare -g change="new"
+declare -gi timeout=30
+declare -g init_delay="0.10"
+declare -gi replace=0
+declare -gi event_num=0
+
+function usage() {
+  cat >&2 <<EOF
+$prog $version ($repository)
+
+(c) 2019-$(date +%Y) ${authors[*]}
+$license License ($license_url)
+
+Usage
+  $prog [-q query-type|-i|-x|-t] [-c change-type] [-W width] [-H height] [-T timeout] mark query command [arg ..]
+  $prog -h
+  $prog -v
+
+Description
+  $prog creates and manages named scratchpads in Sway.
+
+  Sway's native scratchpad only supports cycling through a collection of windows
+  one-by-one.
+
+  $prog makes it possible to create any number of named scratchpads which can be
+  toggled individually. Named scratchpads are assigned a unique mark which is
+  used to identify and control them.
+
+  Any program that spawns a window can be used as a named scratchpad.
+
+
+  In order for $prog to create the scratchpad, it subscribes to Sway window event
+  notifications and then launches the program. Events are tested against the
+  specified query, based on the query-type and change-type options.
+
+  When a matching window is found, it's converted into a named scratchpad and
+  $prog exits with code 0. If no matching windows are found before the timeout
+  expires, $prog exits with a code of 2.
+
+  If a window with the given mark already exists, its visibility is toggled and
+  the command is not run.
+
+Options
+  General Options
+    -h               Display usage information
+    -v               Print $prog version.
+    -T               Number of seconds to wait for the target window to appear.
+                     Default: $timeout
+
+  Mark options
+    -p               The string to prepend to the mark. This string is used to
+                     indentify other scratchpads that have been created by $prog
+                     when using the -r option.
+                     Default: "sc-"
+
+  Query Options
+    -q <query-type>  Set the type of query to use when looking for the
+                     application window.
+
+                     Supported query types are:
+                       app_id   Match against the app_id property of the window.
+                                Applicable to wayland windows only.
+
+                       class    Match against the class property of the window.
+                                Applicable to xwayland windows only.
+
+                       title    Match against the window title.
+
+                       focus    Match the focused window.
+
+                     Default: "app_id".
+
+    -i               Shorthand for '-q app_id'
+    -x               Shorthand for '-q class'
+    -t               Shorthand for '-q title'
+    -f               Shorthand for '-q focus'
+
+    -R               Treat the query as a regular expression
+
+    -c <change-type> Window change type to listen for. See the WINDOW subsection
+                     under EVENTS in sway-ipc(7) for all valid change types.
+                     Default: "new".
+
+    -n <num>         The event number to listen for. If 0, the first event
+                     matching the query will be used. Otherwise, the nth event
+                     matching the query will be used.
+                     Default: 0.
+
+
+  Scratchpad Options
+    -W <width>       Width of the scratchpad window. Default: 75 ppt.
+    -H <height>      Height of the scratchpad window. Default: 75 ppt.
+                     Width and height can be followed by a unit type of "px" or "ppt".
+                     If no unit is specified, "ppt" is assumed.
+
+    -P <position>    Position of the scratchpad window. Valid values are:
+                       center    Center the window on the screen.
+                       mouse     Place the window under the mouse cursor.
+                       <x>,<y>   Place the window at the specified coordinates.
+                     Default: "center"
+
+    -r               If another scratchpad is currently focused, it will be hidden
+                     before showing the new scratchpad. Other scratchpads are
+                     identified based on the presence of the prefix specified
+                     with the -p option.
+
+Arguments
+  mark               The mark assigned to this scratchpad. The mark will be
+                     prepended with the prefix specified by the -p option.
+                     If a window with the mark is found, its visibility will be
+                     toggled. Otherwise, the 'command' will be run to spawn the
+                     target application. If this option is an empty string, an
+                     unnamed scratchpad will be created and no mark will be
+                     assigned.
+
+  query              The query to test for when waiting for the target
+                     application's window to appear. See Query Options above for
+                     more information about query types.
+
+  command [arg ..]   The command used to spawn the target application if a
+                     matching mark is not found. This command will be executed
+                     as 'swaymsg exec <command [arg ..]>'.
+
+
+Example Sway Configuration
+
+bindsym {
+  #           ${prog//?/ }  Options      Mark  Query      Command
+  #-----------${prog//?/-}---------------------------------------------------------
+  Mod4+t exec ${prog}               term  Alacritty  alacritty
+  Mod4+b exec ${prog}  -W 85 -H 85  ff-p  firefox    firefox -P personal
+  Mod4+B exec ${prog}  -W 85 -H 85  ff-w  firefox    firefox -P work
+  Mod4+e exec ${prog}  -x           eq    qpaeq      QT_QPA_PLATFORM=xcb qpaeq
+  Mod4+s exec ${prog}  -tc title    spot  Spotify    gtk-launch spotify
+}
+
+EOF
+}
+
+function scratchpad_cmd() {
+  cmd="$1"
+  case "$cmd" in
+  init)
+    if [[ -z "$mark" ]]; then
+      echo "floating enable, border pixel \$size_border"
+    else
+      echo "floating enable, mark --add $prefix$mark, border pixel \$size_border"
+    fi
+    ;;
+  show)
+    echo "move window to workspace current, resize set $width $height, focus, move position $position"
+    ;;
+  hide)
+    echo "move window to scratchpad"
+    ;;
+  *)
+    echo "unknown scratchpad_cmd '$cmd'" >&2
+    return 1
+    ;;
+  esac
+}
+
+# function scratchpad_toggle() {
+#   local -a res=()
+#   mapfile -t res <<< "$(
+#     swaymsg -t get_tree \
+#       | jq --arg 'prefix' "$prefix" --arg 'mark' "$mark" -r '
+#           .
+#           | . as $orig
+#           | getpath(
+#             .
+#             | path(
+#               .
+#               | ..
+#               | .marks?
+#               | arrays
+#               | select(index("\($prefix)\($mark)"))
+#             )[0:-1]
+#           )
+#           | .id // 0,
+#             if (.focused // false) then
+#               1
+#             elif (
+#               $orig
+#               | (
+#                 ..
+#                 | select(.focused?)
+#                 | .marks? // []
+#                 | map(.[0:($prefix | length)])
+#                 | index($prefix)
+#               ) // -1 >= 0
+#             ) then
+#               2
+#             else
+#               0
+#             end
+#         '
+#   )"
+#
+#   echo "${res[*]}"
+#
+#   if [[ ${#res[@]} -ne 2 ]]; then
+#     return 1
+#   fi
+#
+#   local -i id="${res[0]}"
+#   local -i foc="${res[1]}"
+#
+#   if [[ $foc -eq 2 && $replace -eq 0 ]]; then
+#     foc=1
+#   fi
+#
+#   local msg=""
+#
+#   echo "$foc" >&2
+#   case $foc in
+#   0)
+#     msg="[con_id=$id] $(scratchpad_cmd show)"
+#     ;;
+#   1)
+#     msg="[con_id=$id] $(scratchpad_cmd hide)"
+#     ;;
+#   2)
+#     msg="$(scratchpad_cmd hide); [con_id=$id] $(scratchpad_cmd show)"
+#     ;;
+#   *)
+#     return 1
+#     ;;
+#   esac
+#
+#   swaymsg "$msg"
+# }
+
+function scratchpad_hide_other() {
+  local -i res
+  res="$(
+    swaymsg -t get_tree |
+      jq --arg 'prefix' "$prefix" --arg 'mark' "$mark" -r '
+        ..
+        | select(.focused?)
+        | .marks? // []
+        | map((. | startswith($prefix)) and (. != $prefix + $mark))
+        | reduce .[] as $e (false; $e or .)
+        | {true: 1, false: 0}[tostring]
+        '
+  )"
+  echo "${res[*]}" >&2
+
+  if [[ $res -eq 0 ]]; then
+    return 1
+  fi
+
+  swaymsg "$(scratchpad_cmd hide)"
+}
+
+function scratchpad_toggle() {
+  mapfile -t res <<<"$(
+    swaymsg -t get_tree |
+      jq --arg 'prefix' "$prefix" --arg 'mark' "$mark" -r '
+        .
+        | getpath(
+          .
+          | path(
+            ..
+            | .marks?
+            | arrays
+            | select(index($prefix + $mark))
+          )[0:-1]
+        )
+        | .id // 0,
+          .focused // false
+      '
+  )"
+  if [[ ${#res[@]} -ne 2 ]]; then
+    return 1
+  fi
+  local -i id="${res[0]}"
+  local foc="${res[1]}"
+
+  if [[ $replace -eq 1 ]]; then
+    scratchpad_hide_other
+  fi
+
+  local msg
+  if [[ $foc == "true" ]]; then
+    msg="[con_id=$id] $(scratchpad_cmd hide)"
+  else
+    msg="[con_id=$id] $(scratchpad_cmd show)"
+  fi
+  swaymsg "$msg"
+}
+
+function scratchpad_create() {
+  local id="$1"
+  local msg=""
+  if [[ $replace -eq 1 ]]; then
+    msg="$(scratchpad_cmd hide); "
+  fi
+  local msg_init msg_show
+  # The weird string concatenation below is to avoid shellcheck+shfmt issue with square backets after variable expansion
+  msg_init="$msg""[con_id=$id] $(scratchpad_cmd init), $(scratchpad_cmd hide)"
+  msg_show="$msg""[con_id=$id] $(scratchpad_cmd show)"
+  swaymsg "$msg_init"
+  sleep "$init_delay"
+  swaymsg "$msg_show"
+}
+
+function scratchpad_launch() {
+  sw-exec "$@"
+  # swaymsg -- exec "$@"
+}
+
+function scratchpad_wait() {
+  local -i id
+  coproc timeout "${timeout}s" swaymsg -mt subscribe '["window"]'
+
+  while read -u "${COPROC[0]}" -r line; do
+    case "$query_type" in
+    app_id)
+      mapfile -t res <<<"$(
+        jq --arg 'change' "$change" -r 'select(.change == $change).container | .id // 0, .app_id // ""' \
+          <<<"$line"
+      )"
+      ;;
+
+    title)
+      mapfile -t res <<<"$(
+        jq --arg 'change' "$change" -r 'select(.change == $change).container | .id // 0, .name // ""' \
+          <<<"$line"
+      )"
+      ;;
+
+    class)
+      mapfile -t res <<<"$(
+        jq --arg 'change' "$change" -r 'select(.change == $change).container | .id // 0, .window_properties.class // ""' \
+          <<<"$line"
+      )"
+      ;;
+
+    *)
+      break
+      ;;
+    esac
+
+    if [[ ${#res[@]} -ne 2 ]]; then
+      continue
+    fi
+
+    local -i id="${res[0]}"
+    local val="${res[1]}"
+
+    if [[ $id -eq 0 ]] ||
+      [[ $query_regex -eq 0 && "$val" != "$query" ]] ||
+      [[ $query_regex -eq 1 && "$(jq -n --arg 'query' "$query" --arg 'val' "$val" '$val | test($query)')" == "false" ]]; then
+      continue
+    fi
+
+    if [[ $event_num -gt 0 ]]; then
+      event_num=$((event_num - 1))
+      continue
+    fi
+
+    echo "Matched window container $id." >&2
+    scratchpad_create "$id"
+    return 0
+  done
+
+  echo "Timeout." >&2
+  return 1
+}
+
+function main() {
+  local width="75 ppt"
+  local height="75 ppt"
+  local -i OPTIND
+  local OPTARG
+  while getopts "hvT:p:q:ixtfRc:n:W:H:P:r" opt; do
+    case "$opt" in
+    h)
+      usage
+      return 0
+      ;;
+    v)
+      echo "$prog $version"
+      return 0
+      ;;
+    T)
+      timeout="$OPTARG"
+      ;;
+    p)
+      prefix="$OPTARG"
+      ;;
+    q | i | x | t | f)
+      if [[ -n "${query_type:-}" ]]; then
+        echo "Only one of -q -i -x -t -f may be specified." >&2
+        return 1
+      fi
+      ;;&
+    q)
+      query_type="$OPTARG"
+      ;;
+    i)
+      query_type="app_id"
+      ;;
+    x)
+      query_type="class"
+      ;;
+    t)
+      query_type="title"
+      ;;
+    f)
+      query_type="focus"
+      ;;
+    R)
+      query_regex=1
+      ;;
+    c)
+      change="$OPTARG"
+      ;;
+    n)
+      event_num="$OPTARG"
+      if [[ $event_num -lt 0 ]]; then
+        echo "Invalid event number: $event_num" >&2
+        return 1
+      fi
+      ;;
+    W)
+      width="$OPTARG"
+      if [[ "$width" =~ ^[[:digit:]]+$ ]]; then width="$width ppt"; fi
+      ;;
+    H)
+      height="$OPTARG"
+      if [[ "$height" =~ ^[[:digit:]]+$ ]]; then height="$height ppt"; fi
+      ;;
+    P)
+      position="$OPTARG"
+      if [[ "$position" =~ ^[[:digit:]]+,[[:digit:]]+$ ]]; then position="${position/,/ }"; fi
+      ;;
+    r)
+      replace=1
+      ;;
+    \?)
+      return 1
+      ;;
+    esac
+  done
+  shift $((OPTIND - 1))
+
+  query_type="${query_type:-app_id}"
+
+  if ! [[ "$query_type" =~ ^(app_id|class|title|focus)$ ]]; then
+    echo "Unsupported query type: $query_type." >&2
+    return 1
+  fi
+
+  if [[ "$query_type" == "focus" ]]; then
+    if [[ $# -ne 1 ]]; then
+      echo "Expected exactly 1 argument for query type 'focus'." >&2
+      return 1
+    fi
+    mark="$1"
+    shift
+    scratchpad_focused
+    return $?
+  fi
+
+  if [[ $# -lt 2 ]]; then
+    echo "Expected 2 or more arguments." >&2
+    return 1
+  fi
+
+  mark="$1"
+  query="$2"
+  shift 2
+
+  if scratchpad_toggle; then
+    return 0
+  fi
+
+  scratchpad_wait &
+  scratchpad_launch "$@"
+  wait %1
+}
+
+main "$@"
