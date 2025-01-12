@@ -12,6 +12,8 @@ declare repository="github.com/b0o/$prog"
 declare license="MIT"
 declare license_url="https://mit-license.org/"
 
+declare -g width="75 ppt"
+declare -g height="75 ppt"
 declare -g prefix="sc-"
 declare -g position="center"
 declare -g mark
@@ -108,8 +110,8 @@ Options
 
 
   Scratchpad Options
-    -W <width>       Width of the scratchpad window. Default: 75 ppt.
-    -H <height>      Height of the scratchpad window. Default: 75 ppt.
+    -W <width>       Width of the scratchpad window. Default: $width.
+    -H <height>      Height of the scratchpad window. Default: $height.
                      Width and height can be followed by a unit type of "px" or "ppt".
                      If no unit is specified, "ppt" is assumed.
 
@@ -318,8 +320,6 @@ function scratchpad_wait() {
 }
 
 function main() {
-  local width="75 ppt"
-  local height="75 ppt"
   local -i OPTIND
   local OPTARG
   while getopts "hvT:p:q:ixtfRc:n:W:H:P:r" opt; do
