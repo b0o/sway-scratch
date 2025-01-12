@@ -255,8 +255,7 @@ function scratchpad_create() {
 }
 
 function scratchpad_launch() {
-  sw-exec "$@"
-  # swaymsg -- exec "$@"
+  swaymsg -- exec "$@"
 }
 
 function scratchpad_wait() {
